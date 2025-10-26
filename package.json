@@ -1,14 +1,24 @@
 {
-  "name": "my-v0-project",
-  "version": "0.1.0",
+  "name": "trundle-app",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
+    "android:build": "npm run export && npx cap sync android && npx cap open android",
+    "android:sync": "npx cap sync android",
     "build": "next build",
+    "capacitor:add": "npx cap add android",
+    "capacitor:init": "npx cap init",
     "dev": "next dev",
+    "export": "next build && next export",
     "lint": "eslint .",
     "start": "next start"
   },
   "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/geolocation": "^6.0.0",
+    "@capacitor/splash-screen": "^6.0.0",
     "@emotion/is-prop-valid": "latest",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "1.2.2",
