@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { useRouter } from "next/navigation"
-import { MapPin, Navigation, Pause, Play, Volume2, VolumeX, Loader2 } from "lucide-react"
+import { MapPin, Navigation, Pause, Play, Volume2, VolumeX } from "lucide-react"
 
 interface Location {
   latitude: number
@@ -13,20 +13,55 @@ interface Location {
   accuracy: number
 }
 
+const STORY_LIBRARY = [
+  {
+    title: "The Wandering Path",
+    text: "As you drive through these winding roads, imagine the countless travelers who have passed this way before you. Each curve in the road tells a story of adventure, of journeys taken and destinations reached. The landscape shifts around you, a living tapestry of nature's artistry.",
+  },
+  {
+    title: "Echoes of the Highway",
+    text: "The highway stretches endlessly before you, a ribbon of possibility cutting through the heart of the land. Listen closely, and you might hear the whispers of stories carried on the wind - tales of road trips past, of laughter shared and memories made.",
+  },
+  {
+    title: "Twilight Travels",
+    text: "As the sun begins its descent, painting the sky in shades of amber and rose, your journey takes on a magical quality. The world transforms in this golden hour, and every mile becomes a meditation on the beauty of the open road.",
+  },
+  {
+    title: "Mountain Memories",
+    text: "The mountains rise majestically in the distance, ancient sentinels watching over your passage. These peaks have witnessed millennia of change, yet they remain constant - a reminder that some things endure beyond the passage of time.",
+  },
+  {
+    title: "Coastal Dreams",
+    text: "Can you smell the salt air? Even if the ocean is miles away, there's something about this stretch of road that speaks of coastal adventures. Perhaps it's the way the light plays across the landscape, or the sense of freedom that comes with the open road.",
+  },
+  {
+    title: "Forest Whispers",
+    text: "The trees stand tall on either side of the road, their branches forming a natural cathedral overhead. In the dappled sunlight filtering through the leaves, you can almost hear the forest breathing, alive with stories of its own.",
+  },
+  {
+    title: "Desert Solitude",
+    text: "In the vast expanse of the desert, there's a profound sense of solitude and peace. The road ahead shimmers in the heat, and the landscape seems to stretch on forever. Here, in this emptiness, you find a fullness of spirit.",
+  },
+  {
+    title: "River Roads",
+    text: "Following the curve of the river, your journey mirrors the flow of water - sometimes rushing, sometimes meandering, but always moving forward. The river has carved its path through the land over countless years, just as you're carving your own path through life.",
+  },
+]
+
 export default function JourneyPage() {
   const router = useRouter()
   const [location, setLocation] = useState<Location | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [distance, setDistance] = useState(0)
-  const [storyTitle, setStoryTitle] = useState("Generating your story...")
+  const [currentStory, setCurrentStory] = useState(STORY_LIBRARY[0])
   const [storyProgress, setStoryProgress] = useState(0)
-  const [isLoadingStory, setIsLoadingStory] = useState(false)
   const [storiesPlayed, setStoriesPlayed] = useState(0)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [storyIndex, setStoryIndex] = useState(0)
   const watchIdRef = useRef<number | null>(null)
   const previousLocationRef = useRef<Location | null>(null)
-  const previousStoriesRef = useRef<string[]>([])
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   // Calculate distance between two coordinates using Haversine formula
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -40,146 +75,87 @@ export default function JourneyPage() {
     return R * c
   }
 
-  const generateAndPlayStory = async (currentLocation: Location) => {
-    if (isLoadingStory) return
-
-    setIsLoadingStory(true)
-    setStoryTitle("Generating your story...")
-
-    try {
-      // Generate story text
-      const storyResponse = await fetch("/api/generate-story", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: currentLocation,
-          previousStories: previousStoriesRef.current,
-        }),
-      })
-
-      if (!storyResponse.ok) {
-        throw new Error("Failed to generate story")
-      }
-
-      const { story } = await storyResponse.json()
-
-      // Store story theme to avoid repetition
-      previousStoriesRef.current.push(story.substring(0, 50))
-      if (previousStoriesRef.current.length > 5) {
-        previousStoriesRef.current.shift()
-      }
-
-      setStoryTitle("The Wandering Path")
-
-      // Convert story to speech
-      const ttsResponse = await fetch("/api/text-to-speech", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: story }),
-      })
-
-      if (!ttsResponse.ok) {
-        throw new Error("Failed to generate speech")
-      }
-
-      const contentType = ttsResponse.headers.get("content-type")
-
-      if (contentType?.includes("application/json")) {
-        // Use browser TTS
-        const { useBrowserTTS, text } = await ttsResponse.json()
-        if (useBrowserTTS && "speechSynthesis" in window) {
-          const utterance = new SpeechSynthesisUtterance(text)
-          utterance.rate = 0.9
-          utterance.pitch = 1.0
-          utterance.volume = isMuted ? 0 : 1
-
-          utterance.onstart = () => {
-            setIsPlaying(true)
-          }
-
-          utterance.onend = () => {
-            setStoriesPlayed((prev) => prev + 1)
-            setStoryProgress(0)
-            setTimeout(() => {
-              if (location) {
-                generateAndPlayStory(location)
-              }
-            }, 2000)
-          }
-
-          // Simulate progress for browser TTS
-          const words = text.split(" ").length
-          const estimatedDuration = (words / 150) * 60 * 1000 // ~150 words per minute
-          const progressInterval = setInterval(() => {
-            setStoryProgress((prev) => {
-              if (prev >= 100) {
-                clearInterval(progressInterval)
-                return 100
-              }
-              return prev + 100 / (estimatedDuration / 100)
-            })
-          }, 100)
-
-          window.speechSynthesis.speak(utterance)
-          setIsLoadingStory(false)
-          return
-        }
-      }
-
-      // Get audio blob and create URL (original API audio path)
-      const audioBlob = await ttsResponse.blob()
-      const audioUrl = URL.createObjectURL(audioBlob)
-
-      // Play audio
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current.src = audioUrl
-        audioRef.current.load()
-
-        audioRef.current.onloadedmetadata = () => {
-          if (!isMuted) {
-            audioRef.current?.play()
-            setIsPlaying(true)
-          }
-        }
-
-        audioRef.current.onended = () => {
-          setStoriesPlayed((prev) => prev + 1)
-          setStoryProgress(0)
-          // Generate next story after a short delay
-          setTimeout(() => {
-            if (location) {
-              generateAndPlayStory(location)
-            }
-          }, 2000)
-        }
-
-        audioRef.current.ontimeupdate = () => {
-          if (audioRef.current) {
-            const progress = (audioRef.current.currentTime / audioRef.current.duration) * 100
-            setStoryProgress(progress)
-          }
-        }
-      }
-
-      setIsLoadingStory(false)
-    } catch (error) {
-      console.error("Error generating/playing story:", error)
-      setStoryTitle("Error loading story")
-      setIsLoadingStory(false)
+  const playStory = (story: (typeof STORY_LIBRARY)[0]) => {
+    if (!("speechSynthesis" in window)) {
+      console.error("Speech synthesis not supported")
+      return
     }
+
+    // Stop any existing speech
+    window.speechSynthesis.cancel()
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current)
+    }
+
+    setCurrentStory(story)
+    setStoryProgress(0)
+
+    const utterance = new SpeechSynthesisUtterance(story.text)
+    utterance.rate = 0.9
+    utterance.pitch = 1.0
+    utterance.volume = isMuted ? 0 : 1
+
+    utterance.onstart = () => {
+      setIsPlaying(true)
+    }
+
+    utterance.onend = () => {
+      setStoriesPlayed((prev) => prev + 1)
+      setStoryProgress(100)
+
+      // Play next story after a short delay
+      setTimeout(() => {
+        const nextIndex = (storyIndex + 1) % STORY_LIBRARY.length
+        setStoryIndex(nextIndex)
+        playStory(STORY_LIBRARY[nextIndex])
+      }, 2000)
+    }
+
+    utterance.onerror = (event) => {
+      console.error("Speech synthesis error:", event)
+      setIsPlaying(false)
+    }
+
+    // Simulate progress
+    const words = story.text.split(" ").length
+    const estimatedDuration = (words / 150) * 60 * 1000 // ~150 words per minute
+    let elapsed = 0
+
+    progressIntervalRef.current = setInterval(() => {
+      elapsed += 100
+      const progress = Math.min((elapsed / estimatedDuration) * 100, 100)
+      setStoryProgress(progress)
+
+      if (progress >= 100 && progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current)
+      }
+    }, 100)
+
+    utteranceRef.current = utterance
+    window.speechSynthesis.speak(utterance)
   }
 
   // Initialize geolocation tracking
   useEffect(() => {
     if (!navigator.geolocation) {
+      // Use fallback location
+      const fallbackLocation = {
+        latitude: 37.7749,
+        longitude: -122.4194,
+        accuracy: 1000,
+      }
+      setLocation(fallbackLocation)
+      previousLocationRef.current = fallbackLocation
+
+      // Start playing first story
+      playStory(STORY_LIBRARY[0])
       return
     }
 
     const geolocationOptions = {
       enableHighAccuracy: true,
-      maximumAge: 10000, // Allow cached position up to 10 seconds old
-      timeout: 30000, // Increased timeout to 30 seconds
+      maximumAge: 10000,
+      timeout: 30000,
     }
 
     // Get initial position
@@ -193,7 +169,8 @@ export default function JourneyPage() {
         setLocation(newLocation)
         previousLocationRef.current = newLocation
 
-        generateAndPlayStory(newLocation)
+        // Start playing first story
+        playStory(STORY_LIBRARY[0])
       },
       (error) => {
         console.error("Geolocation error:", error.message)
@@ -204,7 +181,9 @@ export default function JourneyPage() {
         }
         setLocation(fallbackLocation)
         previousLocationRef.current = fallbackLocation
-        generateAndPlayStory(fallbackLocation)
+
+        // Start playing first story
+        playStory(STORY_LIBRARY[0])
       },
       geolocationOptions,
     )
@@ -243,36 +222,38 @@ export default function JourneyPage() {
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current)
       }
-    }
-  }, [])
-
-  useEffect(() => {
-    audioRef.current = new Audio()
-    audioRef.current.volume = isMuted ? 0 : 1
-
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current.src = ""
+      window.speechSynthesis.cancel()
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current)
       }
     }
   }, [])
 
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = isMuted ? 0 : 1
+    if (utteranceRef.current && window.speechSynthesis.speaking) {
+      // Restart with new volume
+      const wasPlaying = isPlaying
+      window.speechSynthesis.cancel()
+      if (wasPlaying && utteranceRef.current) {
+        utteranceRef.current.volume = isMuted ? 0 : 1
+        window.speechSynthesis.speak(utteranceRef.current)
+      }
     }
   }, [isMuted])
 
   const handlePlayPause = () => {
-    if (audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.pause()
-        setIsPlaying(false)
+    if (!("speechSynthesis" in window)) return
+
+    if (isPlaying) {
+      window.speechSynthesis.pause()
+      setIsPlaying(false)
+    } else {
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume()
       } else {
-        audioRef.current.play()
-        setIsPlaying(true)
+        playStory(currentStory)
       }
+      setIsPlaying(true)
     }
   }
 
@@ -281,8 +262,9 @@ export default function JourneyPage() {
   }
 
   const handleEndJourney = () => {
-    if (audioRef.current) {
-      audioRef.current.pause()
+    window.speechSynthesis.cancel()
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current)
     }
     router.push("/home")
   }
@@ -425,14 +407,9 @@ export default function JourneyPage() {
           <div className="space-y-4">
             {/* Story Info */}
             <div className="flex items-center justify-between">
-              <div className="flex-1 flex items-center gap-2">
-                {isLoadingStory && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
-                <div>
-                  <h3 className="font-serif font-semibold text-lg">{storyTitle}</h3>
-                  <p className="text-sm text-muted-foreground">
-                    {isLoadingStory ? "Generating..." : `Story ${storiesPlayed + 1}`}
-                  </p>
-                </div>
+              <div className="flex-1">
+                <h3 className="font-serif font-semibold text-lg">{currentStory.title}</h3>
+                <p className="text-sm text-muted-foreground">Story {storiesPlayed + 1}</p>
               </div>
               <Button variant="ghost" size="icon" onClick={handleMuteToggle} className="rounded-full">
                 {isMuted ? (
@@ -470,7 +447,6 @@ export default function JourneyPage() {
                 onClick={handlePlayPause}
                 size="icon"
                 className="rounded-full w-16 h-16 bg-primary hover:bg-primary/90 shadow-lg"
-                disabled={isLoadingStory}
               >
                 {isPlaying ? (
                   <Pause className="w-7 h-7 text-primary-foreground" />
@@ -493,7 +469,7 @@ export default function JourneyPage() {
                 transition={{ repeat: Number.POSITIVE_INFINITY, duration: 2 }}
                 className="w-2 h-2 rounded-full bg-primary"
               />
-              <span>Stories generated automatically based on your location</span>
+              <span>Stories play automatically as you travel</span>
             </div>
           </div>
         </Card>

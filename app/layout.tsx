@@ -2,7 +2,6 @@ import type React from "react"
 import type { Metadata } from "next"
 import { Playfair_Display, Inter } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
-import { RegisterServiceWorker } from "./register-sw"
 import "./globals.css"
 
 const playfair = Playfair_Display({
@@ -49,7 +48,6 @@ export default function RootLayout({
         <meta name="theme-color" content="#5A6F4E" />
       </head>
       <body className={`${inter.variable} ${playfair.variable} font-sans antialiased`}>
-        <RegisterServiceWorker />
         {children}
         <Analytics />
       </body>
