@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { useRouter } from "next/navigation"
-import { MapPin, Navigation, Pause, Play, Volume2, VolumeX } from "lucide-react"
+import { MapPin, Navigation, Pause, Play, Volume2, VolumeX, Loader2 } from "lucide-react"
 
 interface Location {
   latitude: number
@@ -16,14 +16,17 @@ interface Location {
 export default function JourneyPage() {
   const router = useRouter()
   const [location, setLocation] = useState<Location | null>(null)
-  const [isPlaying, setIsPlaying] = useState(true)
+  const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [distance, setDistance] = useState(0)
-  const [storyTitle, setStoryTitle] = useState("The Wandering Path")
+  const [storyTitle, setStoryTitle] = useState("Generating your story...")
   const [storyProgress, setStoryProgress] = useState(0)
+  const [isLoadingStory, setIsLoadingStory] = useState(false)
+  const [storiesPlayed, setStoriesPlayed] = useState(0)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const watchIdRef = useRef<number | null>(null)
   const previousLocationRef = useRef<Location | null>(null)
+  const previousStoriesRef = useRef<string[]>([])
 
   // Calculate distance between two coordinates using Haversine formula
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -37,14 +40,147 @@ export default function JourneyPage() {
     return R * c
   }
 
+  const generateAndPlayStory = async (currentLocation: Location) => {
+    if (isLoadingStory) return
+
+    setIsLoadingStory(true)
+    setStoryTitle("Generating your story...")
+
+    try {
+      // Generate story text
+      const storyResponse = await fetch("/api/generate-story", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: currentLocation,
+          previousStories: previousStoriesRef.current,
+        }),
+      })
+
+      if (!storyResponse.ok) {
+        throw new Error("Failed to generate story")
+      }
+
+      const { story } = await storyResponse.json()
+
+      // Store story theme to avoid repetition
+      previousStoriesRef.current.push(story.substring(0, 50))
+      if (previousStoriesRef.current.length > 5) {
+        previousStoriesRef.current.shift()
+      }
+
+      setStoryTitle("The Wandering Path")
+
+      // Convert story to speech
+      const ttsResponse = await fetch("/api/text-to-speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: story }),
+      })
+
+      if (!ttsResponse.ok) {
+        throw new Error("Failed to generate speech")
+      }
+
+      const contentType = ttsResponse.headers.get("content-type")
+
+      if (contentType?.includes("application/json")) {
+        // Use browser TTS
+        const { useBrowserTTS, text } = await ttsResponse.json()
+        if (useBrowserTTS && "speechSynthesis" in window) {
+          const utterance = new SpeechSynthesisUtterance(text)
+          utterance.rate = 0.9
+          utterance.pitch = 1.0
+          utterance.volume = isMuted ? 0 : 1
+
+          utterance.onstart = () => {
+            setIsPlaying(true)
+          }
+
+          utterance.onend = () => {
+            setStoriesPlayed((prev) => prev + 1)
+            setStoryProgress(0)
+            setTimeout(() => {
+              if (location) {
+                generateAndPlayStory(location)
+              }
+            }, 2000)
+          }
+
+          // Simulate progress for browser TTS
+          const words = text.split(" ").length
+          const estimatedDuration = (words / 150) * 60 * 1000 // ~150 words per minute
+          const progressInterval = setInterval(() => {
+            setStoryProgress((prev) => {
+              if (prev >= 100) {
+                clearInterval(progressInterval)
+                return 100
+              }
+              return prev + 100 / (estimatedDuration / 100)
+            })
+          }, 100)
+
+          window.speechSynthesis.speak(utterance)
+          setIsLoadingStory(false)
+          return
+        }
+      }
+
+      // Get audio blob and create URL (original API audio path)
+      const audioBlob = await ttsResponse.blob()
+      const audioUrl = URL.createObjectURL(audioBlob)
+
+      // Play audio
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.src = audioUrl
+        audioRef.current.load()
+
+        audioRef.current.onloadedmetadata = () => {
+          if (!isMuted) {
+            audioRef.current?.play()
+            setIsPlaying(true)
+          }
+        }
+
+        audioRef.current.onended = () => {
+          setStoriesPlayed((prev) => prev + 1)
+          setStoryProgress(0)
+          // Generate next story after a short delay
+          setTimeout(() => {
+            if (location) {
+              generateAndPlayStory(location)
+            }
+          }, 2000)
+        }
+
+        audioRef.current.ontimeupdate = () => {
+          if (audioRef.current) {
+            const progress = (audioRef.current.currentTime / audioRef.current.duration) * 100
+            setStoryProgress(progress)
+          }
+        }
+      }
+
+      setIsLoadingStory(false)
+    } catch (error) {
+      console.error("Error generating/playing story:", error)
+      setStoryTitle("Error loading story")
+      setIsLoadingStory(false)
+    }
+  }
+
   // Initialize geolocation tracking
   useEffect(() => {
     if (!navigator.geolocation) {
-      console.log("[v0] Geolocation not supported")
       return
     }
 
-    console.log("[v0] Starting geolocation tracking")
+    const geolocationOptions = {
+      enableHighAccuracy: true,
+      maximumAge: 10000, // Allow cached position up to 10 seconds old
+      timeout: 30000, // Increased timeout to 30 seconds
+    }
 
     // Get initial position
     navigator.geolocation.getCurrentPosition(
@@ -54,13 +190,23 @@ export default function JourneyPage() {
           longitude: position.coords.longitude,
           accuracy: position.coords.accuracy,
         }
-        console.log("[v0] Initial location:", newLocation)
         setLocation(newLocation)
         previousLocationRef.current = newLocation
+
+        generateAndPlayStory(newLocation)
       },
       (error) => {
-        console.log("[v0] Geolocation error:", error.message)
+        console.error("Geolocation error:", error.message)
+        const fallbackLocation = {
+          latitude: 37.7749,
+          longitude: -122.4194,
+          accuracy: 1000,
+        }
+        setLocation(fallbackLocation)
+        previousLocationRef.current = fallbackLocation
+        generateAndPlayStory(fallbackLocation)
       },
+      geolocationOptions,
     )
 
     // Watch position for continuous updates
@@ -72,7 +218,6 @@ export default function JourneyPage() {
           accuracy: position.coords.accuracy,
         }
 
-        console.log("[v0] Location updated:", newLocation)
         setLocation(newLocation)
 
         // Calculate distance traveled
@@ -89,13 +234,9 @@ export default function JourneyPage() {
         previousLocationRef.current = newLocation
       },
       (error) => {
-        console.log("[v0] Geolocation watch error:", error.message)
+        console.error("Geolocation watch error:", error.message)
       },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 0,
-        timeout: 5000,
-      },
+      geolocationOptions,
     )
 
     return () => {
@@ -105,36 +246,44 @@ export default function JourneyPage() {
     }
   }, [])
 
-  // Initialize audio playback
   useEffect(() => {
-    // Create a simple audio context for background audio
-    // In production, this would load actual story audio files
-    console.log("[v0] Initializing audio playback")
-
-    // Simulate audio progress
-    const progressInterval = setInterval(() => {
-      setStoryProgress((prev) => {
-        if (prev >= 100) return 0
-        return prev + 0.5
-      })
-    }, 1000)
+    audioRef.current = new Audio()
+    audioRef.current.volume = isMuted ? 0 : 1
 
     return () => {
-      clearInterval(progressInterval)
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.src = ""
+      }
     }
   }, [])
 
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = isMuted ? 0 : 1
+    }
+  }, [isMuted])
+
   const handlePlayPause = () => {
-    setIsPlaying(!isPlaying)
-    console.log("[v0] Audio playback:", !isPlaying ? "playing" : "paused")
+    if (audioRef.current) {
+      if (isPlaying) {
+        audioRef.current.pause()
+        setIsPlaying(false)
+      } else {
+        audioRef.current.play()
+        setIsPlaying(true)
+      }
+    }
   }
 
   const handleMuteToggle = () => {
     setIsMuted(!isMuted)
-    console.log("[v0] Audio muted:", !isMuted)
   }
 
   const handleEndJourney = () => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+    }
     router.push("/home")
   }
 
@@ -253,13 +402,13 @@ export default function JourneyPage() {
           <Card className="bg-card/90 backdrop-blur-md shadow-lg rounded-xl p-3">
             <div className="text-center">
               <p className="text-xl font-bold text-primary">{distance.toFixed(1)}</p>
-              <p className="text-xs text-muted-foreground">km</p>
+              <p className="text-xs text-muted-foreground">km traveled</p>
             </div>
           </Card>
           <Card className="bg-card/90 backdrop-blur-md shadow-lg rounded-xl p-3">
             <div className="text-center">
-              <p className="text-xl font-bold text-secondary">{Math.floor(storyProgress / 10)}</p>
-              <p className="text-xs text-muted-foreground">stories</p>
+              <p className="text-xl font-bold text-secondary">{storiesPlayed}</p>
+              <p className="text-xs text-muted-foreground">stories played</p>
             </div>
           </Card>
         </div>
@@ -276,9 +425,14 @@ export default function JourneyPage() {
           <div className="space-y-4">
             {/* Story Info */}
             <div className="flex items-center justify-between">
-              <div className="flex-1">
-                <h3 className="font-serif font-semibold text-lg">{storyTitle}</h3>
-                <p className="text-sm text-muted-foreground">Chapter {Math.floor(storyProgress / 20) + 1}</p>
+              <div className="flex-1 flex items-center gap-2">
+                {isLoadingStory && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
+                <div>
+                  <h3 className="font-serif font-semibold text-lg">{storyTitle}</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {isLoadingStory ? "Generating..." : `Story ${storiesPlayed + 1}`}
+                  </p>
+                </div>
               </div>
               <Button variant="ghost" size="icon" onClick={handleMuteToggle} className="rounded-full">
                 {isMuted ? (
@@ -294,20 +448,19 @@ export default function JourneyPage() {
               <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                 <motion.div
                   className="h-full bg-gradient-to-r from-primary to-secondary"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${storyProgress}%` }}
-                  transition={{ duration: 0.5 }}
+                  style={{ width: `${storyProgress}%` }}
+                  transition={{ duration: 0.3 }}
                 />
               </div>
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span>{Math.floor(storyProgress)}%</span>
-                <span>Auto-playing</span>
+                <span>{isPlaying ? "Playing" : "Paused"}</span>
               </div>
             </div>
 
             {/* Controls */}
             <div className="flex items-center justify-center gap-4">
-              <Button variant="outline" size="icon" className="rounded-full w-12 h-12 bg-transparent">
+              <Button variant="outline" size="icon" className="rounded-full w-12 h-12 bg-transparent" disabled>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                 </svg>
@@ -317,6 +470,7 @@ export default function JourneyPage() {
                 onClick={handlePlayPause}
                 size="icon"
                 className="rounded-full w-16 h-16 bg-primary hover:bg-primary/90 shadow-lg"
+                disabled={isLoadingStory}
               >
                 {isPlaying ? (
                   <Pause className="w-7 h-7 text-primary-foreground" />
@@ -325,7 +479,7 @@ export default function JourneyPage() {
                 )}
               </Button>
 
-              <Button variant="outline" size="icon" className="rounded-full w-12 h-12 bg-transparent">
+              <Button variant="outline" size="icon" className="rounded-full w-12 h-12 bg-transparent" disabled>
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
@@ -339,7 +493,7 @@ export default function JourneyPage() {
                 transition={{ repeat: Number.POSITIVE_INFINITY, duration: 2 }}
                 className="w-2 h-2 rounded-full bg-primary"
               />
-              <span>Story playing automatically based on your location</span>
+              <span>Stories generated automatically based on your location</span>
             </div>
           </div>
         </Card>
